@@ -4,6 +4,7 @@ import threading
 import queue
 import webbrowser
 import re
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import yt_dlp
@@ -32,6 +33,22 @@ class DownloaderApp:
         self.btn_folder.config(state="disabled")
         self.btn_download.config(state="disabled")
         self.btn_stop.config(state="disabled")
+
+    def get_base_path(self):
+        """Возвращает путь к папке с программой (для сохранения лога ошибок)."""
+        if getattr(sys, 'frozen', False):
+            return os.path.dirname(sys.executable)
+        else:
+            return os.path.dirname(os.path.abspath(__file__))
+
+    def log_failed_track(self, artist, title):
+        """Записывает неудачный трек в файл failed_tracks.txt."""
+        try:
+            log_path = os.path.join(self.get_base_path(), "failed_tracks.txt")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{artist} - {title}\n")
+        except Exception:
+            pass  # не критично, если не удалось записать
 
     def create_widgets(self):
         main_frame = ttk.Frame(self.root, padding="10")
@@ -238,12 +255,13 @@ class DownloaderApp:
             else:
                 self.failed_count += 1
                 self.last_failed = f"{artist} - {title}"
+                self.log_failed_track(artist, title)
 
             self.queue.put(("progress", self.downloaded, self.failed_count, self.last_failed))
 
         self.queue.put(("done",))
 
-    def download_track(self, artist, title, output_dir, safe_artist, safe_title):
+    def download_track(self, artist, title, output_dir, safe_artist, safe_title, retries=3):
         base_filename = os.path.join(output_dir, f"{safe_artist} - {safe_title}")
         query = f"{artist} {title} audio"
 
@@ -257,21 +275,27 @@ class DownloaderApp:
             'nocheckcertificate': True,
         }
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([f"ytsearch:{query}"])
+        for attempt in range(1, retries + 1):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([f"ytsearch:{query}"])
 
-            for fname in os.listdir(output_dir):
-                if fname.startswith(f"{safe_artist} - {safe_title}.") and not fname.endswith('.mp3'):
-                    old_path = os.path.join(output_dir, fname)
-                    new_path = base_filename + '.mp3'
-                    if os.path.exists(new_path):
-                        os.remove(new_path)
-                    os.rename(old_path, new_path)
-                    return True
-            return False
-        except Exception:
-            return False
+                for fname in os.listdir(output_dir):
+                    if fname.startswith(f"{safe_artist} - {safe_title}.") and not fname.endswith('.mp3'):
+                        old_path = os.path.join(output_dir, fname)
+                        new_path = base_filename + '.mp3'
+                        if os.path.exists(new_path):
+                            os.remove(new_path)
+                        os.rename(old_path, new_path)
+                        return True
+                return False
+            except Exception as e:
+                if attempt < retries:
+                    time.sleep(5)
+                    continue
+                else:
+                    return False
+        return False
 
     def update_ui_from_queue(self):
         try:
@@ -294,7 +318,10 @@ class DownloaderApp:
                     if self.stop_flag:
                         messagebox.showinfo("Остановлено", "Скачивание прервано пользователем.")
                     else:
-                        messagebox.showinfo("Завершено", "Скачивание завершено!")
+                        extra = ""
+                        if self.failed_count > 0:
+                            extra = f"\n\nНеудачные треки записаны в файл failed_tracks.txt"
+                        messagebox.showinfo("Завершено", f"Скачивание завершено!{extra}")
         except queue.Empty:
             pass
         finally:
